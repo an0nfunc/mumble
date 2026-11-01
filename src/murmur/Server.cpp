@@ -1939,8 +1939,9 @@ void Server::tcpTransmitData(QByteArray a, unsigned int id) {
 		*reinterpret_cast< quint32 * >(&uc[2]) = qToBigEndian(static_cast< quint32 >(len));
 		memcpy(uc + 6, a.constData(), static_cast< std::size_t >(len));
 
-		c->sendMessage(qba);
-		c->forceFlush();
+		if (c->sendVoiceMessage(qba)) {
+			c->forceFlush();
+		}
 	}
 }
 

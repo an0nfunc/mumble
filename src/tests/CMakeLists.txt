@@ -43,6 +43,7 @@ endif()
 
 # Shared tests
 add_subdirectory("TestCaseInsensitiveQString")
+add_subdirectory("TestConnection")
 add_subdirectory("TestCryptographicHash")
 add_subdirectory("TestCryptographicRandom")
 add_subdirectory("TestDatabase")

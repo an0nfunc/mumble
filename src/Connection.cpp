@@ -39,9 +39,12 @@ Connection::Connection(QObject *p, QSslSocket *qtsSock) : QObject(p) {
 		qRegisterMetaType< QAbstractSocket::SocketError >("QAbstractSocket::SocketError");
 	}
 
-	int nodelay = 1;
-	setsockopt(static_cast< int >(qtsSocket->socketDescriptor()), IPPROTO_TCP, TCP_NODELAY,
-			   reinterpret_cast< char * >(&nodelay), static_cast< socklen_t >(sizeof(nodelay)));
+	// The client creates its Connection before connecting, when there is no descriptor to configure yet
+	if (qtsSocket->state() == QAbstractSocket::ConnectedState) {
+		applySocketOptions();
+	} else {
+		connect(qtsSocket, &QAbstractSocket::connected, this, &Connection::applySocketOptions);
+	}
 
 	connect(qtsSocket, SIGNAL(errorOccurred(QAbstractSocket::SocketError)), this,
 			SLOT(socketError(QAbstractSocket::SocketError)));
@@ -61,6 +64,17 @@ Connection::~Connection() {
 		if (!QOSRemoveSocketFromFlow(hQoS, 0, dwFlow, 0))
 			warn("Connection: Failed to remove flow from QoS");
 	}
+#endif
+}
+
+void Connection::applySocketOptions() {
+	const auto setTcpOption = [this](int option, int value) {
+		setsockopt(static_cast< int >(qtsSocket->socketDescriptor()), IPPROTO_TCP, option,
+				   reinterpret_cast< char * >(&value), static_cast< socklen_t >(sizeof(value)));
+	};
+	setTcpOption(TCP_NODELAY, 1);
+#ifdef TCP_NOTSENT_LOWAT
+	setTcpOption(TCP_NOTSENT_LOWAT, SEND_LOW_WATERMARK_BYTES);
 #endif
 }
 
@@ -203,6 +217,28 @@ void Connection::sendMessage(const QByteArray &qbaMsg) {
 	}
 
 	qtsSocket->write(qbaMsg);
+}
+
+bool Connection::sendVoiceMessage(const QByteArray &qbaMsg) {
+	const qint64 backlog = qtsSocket->bytesToWrite() + qtsSocket->encryptedBytesToWrite();
+	if (backlog > VOICE_DROP_BACKLOG_BYTES) {
+		// Debug level and no peer address: the server shares this code and would otherwise log client addresses
+		// regardless of its obfuscate setting.
+		if (m_droppedVoicePackets == 0) {
+			log::debug("Connection: Dropping tunnelled voice, {} bytes queued", backlog);
+		}
+		++m_droppedVoicePackets;
+		m_lastVoiceDrop.restart();
+		return false;
+	}
+
+	if (m_droppedVoicePackets > 0 && m_lastVoiceDrop.elapsed() > VOICE_DROP_QUIET_PERIOD) {
+		log::debug("Connection: Sending tunnelled voice again after dropping {} packets", m_droppedVoicePackets);
+		m_droppedVoicePackets = 0;
+	}
+
+	sendMessage(qbaMsg);
+	return true;
 }
 
 void Connection::forceFlush() {

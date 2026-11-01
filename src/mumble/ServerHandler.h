@@ -53,7 +53,9 @@ public:
 	Mumble::Protocol::TCPMessageType type;
 	QByteArray qbaMsg;
 	bool bFlush;
-	ServerHandlerMessageEvent(const QByteArray &msg, Mumble::Protocol::TCPMessageType type, bool flush = false);
+	bool bVoice;
+	ServerHandlerMessageEvent(const QByteArray &msg, Mumble::Protocol::TCPMessageType type, bool flush = false,
+							  bool voice = false);
 };
 
 enum class ServerHandlerState {

@@ -70,11 +70,12 @@ int ServerHandler::nextConnectionID = -1;
 QMutex ServerHandler::nextConnectionIDMutex;
 
 ServerHandlerMessageEvent::ServerHandlerMessageEvent(const QByteArray &msg, Mumble::Protocol::TCPMessageType type,
-													 bool flush)
+													 bool flush, bool voice)
 	: QEvent(static_cast< QEvent::Type >(SERVERSEND_EVENT)) {
 	qbaMsg     = msg;
 	this->type = type;
 	bFlush     = flush;
+	bVoice     = voice;
 }
 
 #ifdef Q_OS_WIN
@@ -193,7 +194,11 @@ void ServerHandler::customEvent(QEvent *evt) {
 	ConnectionPtr connection(cConnection);
 	if (connection) {
 		if (shme->qbaMsg.size() > 0) {
-			connection->sendMessage(shme->qbaMsg);
+			if (shme->bVoice) {
+				connection->sendVoiceMessage(shme->qbaMsg);
+			} else {
+				connection->sendMessage(shme->qbaMsg);
+			}
 			if (shme->bFlush) {
 				connection->forceFlush();
 			}
@@ -342,8 +347,8 @@ void ServerHandler::sendMessage(const unsigned char *data, int len, bool force) 
 		*reinterpret_cast< quint32 * >(&uc[2]) = qToBigEndian(static_cast< quint32 >(len));
 		memcpy(uc + 6, data, static_cast< std::size_t >(len));
 
-		QApplication::postEvent(this,
-								new ServerHandlerMessageEvent(qba, Mumble::Protocol::TCPMessageType::UDPTunnel, true));
+		QApplication::postEvent(
+			this, new ServerHandlerMessageEvent(qba, Mumble::Protocol::TCPMessageType::UDPTunnel, true, true));
 	} else {
 		if (!csCrypt->encrypt(reinterpret_cast< const unsigned char * >(data), crypto.data(),
 							  static_cast< unsigned int >(len))) {

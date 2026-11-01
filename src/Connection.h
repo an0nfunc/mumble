@@ -9,6 +9,7 @@
 #include "HostAddress.h"
 #include "Logger.h"
 #include "MumbleProtocol.h"
+#include "Timer.h"
 
 #include <QtCore/QtGlobal>
 
@@ -34,10 +35,15 @@ class Connection : public QObject {
 private:
 	Q_OBJECT
 	Q_DISABLE_COPY(Connection)
+
+	void applySocketOptions();
+
 protected:
 	QSslSocket *qtsSocket;
 	Mumble::Protocol::TCPMessageType m_type;
 	int iPacketLength;
+	unsigned int m_droppedVoicePackets = 0;
+	Timer m_lastVoiceDrop;
 #ifdef Q_OS_WIN
 	static HANDLE hQoS;
 	DWORD dwFlow;
@@ -56,6 +62,14 @@ signals:
 	void handleSslErrors(const QList< QSslError > &);
 
 public:
+	/// Tunnelled voice is dropped while more than this is queued, so a congested link doesn't build up stale audio.
+	static constexpr qint64 VOICE_DROP_BACKLOG_BYTES = 4096;
+	/// A drop episode ends once voice has been sent with no drop for this long. While the tunnel is slower than the
+	/// voice stream the backlog hovers around the limit, so single sends between drops do not end it.
+	static constexpr std::chrono::seconds VOICE_DROP_QUIET_PERIOD{ 1 };
+	/// Caps the unsent data the kernel buffers, so that a backlog stays in Qt where sendVoiceMessage() sees it.
+	static constexpr int SEND_LOW_WATERMARK_BYTES = 4096;
+
 	Connection(QObject *parent, QSslSocket *qtsSocket);
 	~Connection();
 
@@ -67,6 +81,8 @@ public:
 	static bool messageToNetwork(const ::google::protobuf::Message &msg, Mumble::Protocol::TCPMessageType msgType,
 								 QByteArray &cache);
 	void sendMessage(const QByteArray &qbaMsg);
+	/// Sends a tunnelled voice packet unless the send backlog is too large. Returns whether it was sent.
+	bool sendVoiceMessage(const QByteArray &qbaMsg);
 	void disconnectSocket(bool force = false);
 	void forceFlush();
 
