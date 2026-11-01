@@ -17,6 +17,7 @@ private:
 	Q_DISABLE_COPY(AudioInputDialog)
 
 	void updateAudioCueEnabled();
+	void updateFecState();
 
 protected:
 	QTimer *qtTick;
@@ -55,6 +56,7 @@ public slots:
 	void on_qsTransmitHold_valueChanged(int v);
 	void on_qsFrames_valueChanged(int v);
 	void on_qsQuality_valueChanged(int v);
+	void on_qcbAllowLowDelay_toggled(bool);
 	void on_qsAmp_valueChanged(int v);
 	void on_qsDoublePush_valueChanged(int v);
 	void on_qsPTTHold_valueChanged(int v);

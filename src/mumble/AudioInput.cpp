@@ -215,6 +215,10 @@ bool AudioInputRegistrar::isMicrophoneAccessDeniedByOS() {
 	return false;
 }
 
+bool AudioInput::usesLowDelayMode(int quality, bool allowLowDelay) {
+	return allowLowDelay && quality >= LOW_DELAY_MIN_QUALITY;
+}
+
 AudioInput::AudioInput()
 	: opusBuffer(static_cast< std::size_t >(Global::get().s.iFramesPerPacket * (SAMPLE_RATE / 100))) {
 	bDebugDumpInput         = Global::get().bDebugDumpInput;
@@ -234,7 +238,7 @@ AudioInput::AudioInput()
 	activityState = ActivityStateActive;
 	opusState     = nullptr;
 
-	if (bAllowLowDelay && iAudioQuality >= 64000) { // > 64 kbit/s bitrate and low delay allowed
+	if (usesLowDelayMode(iAudioQuality, bAllowLowDelay)) {
 		opusState = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_RESTRICTED_LOWDELAY, nullptr);
 		qWarning("AudioInput: Opus encoder set for low delay");
 	} else if (iAudioQuality >= 32000) { // > 32 kbit/s bitrate

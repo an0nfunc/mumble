@@ -315,11 +315,34 @@ void AudioInputDialog::on_qsTransmitHold_valueChanged(int v) {
 }
 
 void AudioInputDialog::on_qsQuality_valueChanged(int v) {
+	// While dragging with low delay allowed, snap to the highest quality that still allows in-band FEC. The nested
+	// valueChanged emitted by setValue() updates the labels.
+	constexpr int snapRange = 3000;
+	const int maxFecQuality = ::AudioInput::LOW_DELAY_MIN_QUALITY - qsQuality->singleStep();
+	if (qcbAllowLowDelay->isChecked() && qsQuality->isSliderDown() && v != maxFecQuality
+		&& v >= maxFecQuality - snapRange && v <= maxFecQuality + snapRange) {
+		qsQuality->setValue(maxFecQuality);
+		return;
+	}
+
 	qlQuality->setText(tr("%1 kb/s").arg(static_cast< float >(v) / 1000.0f, 0, 'f', 1));
 	updateBitrate();
+	updateFecState();
 
 	Mumble::Accessibility::setSliderSemanticValue(
 		qsQuality, QString("%1 %2").arg(static_cast< float >(v) / 1000.0f, 0, 'f', 1).arg(tr("kilobits per second")));
+}
+
+void AudioInputDialog::on_qcbAllowLowDelay_toggled(bool) {
+	updateFecState();
+}
+
+void AudioInputDialog::updateFecState() {
+	if (::AudioInput::usesLowDelayMode(qsQuality->value(), qcbAllowLowDelay->isChecked())) {
+		qlFecState->setText(tr("Packet loss recovery: off. Low delay mode cannot carry Opus FEC."));
+	} else {
+		qlFecState->setText(tr("Packet loss recovery: on when packet loss is measured."));
+	}
 }
 
 void AudioInputDialog::on_qsSpeexNoiseSupStrength_valueChanged(int v) {

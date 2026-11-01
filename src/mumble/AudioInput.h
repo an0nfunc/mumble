@@ -302,6 +302,11 @@ public:
 	static int getNetworkBandwidth(int bitrate, int frames);
 	static void setMaxBandwidth(int bitspersec);
 
+	/// The lowest quality in bit/s at which low delay mode is used when allowed
+	static constexpr int LOW_DELAY_MIN_QUALITY = 64000;
+	/// Whether the encoder runs in Opus' low delay mode, which is CELT only and therefore has no in-band FEC
+	static bool usesLowDelayMode(int quality, bool allowLowDelay);
+
 	/// Construct an AudioInput.
 	///
 	/// This constructor is only ever called by Audio::startInput(), and is guaranteed
