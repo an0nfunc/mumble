@@ -7,6 +7,7 @@
 
 #include "Audio.h"
 #include "ClientUser.h"
+#include "JitterTimestamp.h"
 #include "PacketDataStream.h"
 #include "Utils.h"
 #include "Global.h"
@@ -216,6 +217,12 @@ void AudioOutputSpeech::addFrameToBuffer(const Mumble::Protocol::AudioData &audi
 	jbp.timestamp = static_cast< unsigned int >(iFrameSize * audioData.frameNumber);
 
 	jitter_buffer_put(jbJitter, &jbp);
+
+	if (JitterTimestamp::isTooLate(static_cast< std::uint32_t >(jitter_buffer_get_pointer_timestamp(jbJitter)),
+								   jbp.timestamp, jbp.span, iFrameSize)) {
+		// jitter_buffer_put() dropped it without calling our destroy callback
+		invalidateAudioOutputCache(jbp.data);
+	}
 }
 
 bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
@@ -392,6 +399,7 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 				}
 
 				if (qlFrames.isEmpty() && update) {
+					QMutexLocker lock(&qmJitter);
 					jitter_buffer_update_delay(jbJitter, nullptr, nullptr);
 				}
 
@@ -422,8 +430,11 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 				}
 			}
 
-			for (unsigned int i = static_cast< unsigned int >(decodedSamples) / iFrameSize; i > 0; --i) {
-				jitter_buffer_tick(jbJitter);
+			{
+				QMutexLocker lock(&qmJitter);
+				for (unsigned int i = static_cast< unsigned int >(decodedSamples) / iFrameSize; i > 0; --i) {
+					jitter_buffer_tick(jbJitter);
+				}
 			}
 		}
 	nextframe:

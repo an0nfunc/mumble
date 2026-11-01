@@ -31,6 +31,7 @@ if(client)
 		add_subdirectory("TestSettingsJSONSerialization")
 	endif()
 	add_subdirectory("OverlayTest")
+	add_subdirectory("TestJitterBufferLatePackets")
 endif()
 
 if(server)

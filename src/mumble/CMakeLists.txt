@@ -159,6 +159,7 @@ set(MUMBLE_SOURCES
 	"GlobalShortcutButtons.ui"
 	"GlobalShortcutTarget.ui"
 	"GlobalShortcutTypes.h"
+	"JitterTimestamp.h"
 	"JSONSerialization.cpp"
 	"JSONSerialization.h"
 	"LCD.cpp"
@@ -361,6 +362,10 @@ list(APPEND MUMBLE_EXE_SOURCES "${CMAKE_BINARY_DIR}/mumble_flags.qrc")
 add_library(mumble_client_lib STATIC ${MUMBLE_SOURCES})
 target_link_libraries(mumble_client_lib PUBLIC smallft)
 target_link_libraries(mumble_client_lib PUBLIC ipcutils)
+
+# Lets tests build single client sources without linking the whole client library
+add_library(mumble_client_audio_libs INTERFACE)
+target_link_libraries(mumble_client_lib PUBLIC mumble_client_audio_libs)
 
 if(WIN32 AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
 	# We don't want the console to appear in release builds.
@@ -723,7 +728,7 @@ if(bundled-speex)
 	# Disable all warnings that the speexdsp code may emit
 	disable_warnings_for_all_targets_in("${3RDPARTY_DIR}/speexdsp-build")
 
-	target_link_libraries(mumble_client_lib PUBLIC speexdsp)
+	target_link_libraries(mumble_client_audio_libs INTERFACE speexdsp)
 
 	if(WIN32)
 		# Shared library on Windows (e.g. ".dll")
@@ -737,7 +742,7 @@ if(bundled-speex)
 else()
 	find_package("SpeexDSP" REQUIRED)
 
-	target_link_libraries(mumble_client_lib PUBLIC SpeexDSP::speexdsp)
+	target_link_libraries(mumble_client_audio_libs INTERFACE SpeexDSP::speexdsp)
 endif()
 
 if(rnnoise)
