@@ -42,6 +42,7 @@
 
 #include <openssl/crypto.h>
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <span>
@@ -68,6 +69,8 @@
 // Init ServerHandler::nextConnectionID
 int ServerHandler::nextConnectionID = -1;
 QMutex ServerHandler::nextConnectionIDMutex;
+
+constexpr std::chrono::milliseconds UDP_PROBE_INTERVAL{ 1000 };
 
 ServerHandlerMessageEvent::ServerHandlerMessageEvent(const QByteArray &msg, Mumble::Protocol::TCPMessageType type,
 													 bool flush, bool voice)
@@ -293,6 +296,9 @@ void ServerHandler::udpReady() {
 					accUDP(static_cast< double >(static_cast< std::uint64_t >(tTimestamp.elapsed().count())
 												 - pingData.timestamp)
 						   / 1000.0);
+					if (m_udpPath) {
+						m_udpPath->probeAnswered(UdpPathMonitor::Clock::now());
+					}
 
 					break;
 				}
@@ -305,6 +311,19 @@ void ServerHandler::udpReady() {
 			}
 		}
 	}
+}
+
+static QByteArray tunnelFrame(const unsigned char *data, int len) {
+	QByteArray qba;
+
+	qba.resize(len + 6);
+	unsigned char *uc = reinterpret_cast< unsigned char * >(qba.data());
+	*reinterpret_cast< quint16 * >(&uc[0]) =
+		qToBigEndian(static_cast< quint16 >(Mumble::Protocol::TCPMessageType::UDPTunnel));
+	*reinterpret_cast< quint32 * >(&uc[2]) = qToBigEndian(static_cast< quint32 >(len));
+	memcpy(uc + 6, data, static_cast< std::size_t >(len));
+
+	return qba;
 }
 
 void ServerHandler::handleVoicePacket(const Mumble::Protocol::AudioData &audioData) {
@@ -338,14 +357,7 @@ void ServerHandler::sendMessage(const unsigned char *data, int len, bool force) 
 		return;
 
 	if (!force && (NetworkConfig::TcpModeEnabled() || !bUdp)) {
-		QByteArray qba;
-
-		qba.resize(len + 6);
-		unsigned char *uc = reinterpret_cast< unsigned char * >(qba.data());
-		*reinterpret_cast< quint16 * >(&uc[0]) =
-			qToBigEndian(static_cast< quint16 >(Mumble::Protocol::TCPMessageType::UDPTunnel));
-		*reinterpret_cast< quint32 * >(&uc[2]) = qToBigEndian(static_cast< quint32 >(len));
-		memcpy(uc + 6, data, static_cast< std::size_t >(len));
+		QByteArray qba = tunnelFrame(data, len);
 
 		QApplication::postEvent(
 			this, new ServerHandlerMessageEvent(qba, Mumble::Protocol::TCPMessageType::UDPTunnel, true, true));
@@ -487,6 +499,7 @@ void ServerHandler::run() {
 			QObject::connect(connection.get(), &Connection::handleSslErrors, this, &ServerHandler::setSslErrors);
 		}
 		bUdp = false;
+		m_udpPath.reset();
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
 		qtsSock->setProtocol(QSsl::TlsV1_2OrLater);
@@ -501,7 +514,7 @@ void ServerHandler::run() {
 		// Setup ping timer;
 		QTimer *ticker = new QTimer(this);
 		QObject::connect(ticker, &QTimer::timeout, this, &ServerHandler::sendPing);
-		ticker->start(Global::get().s.iPingIntervalMsec);
+		ticker->start(std::min(UDP_PROBE_INTERVAL, std::chrono::milliseconds(Global::get().s.iPingIntervalMsec)));
 
 		Global::get().mw->rtLast = MumbleProto::Reject_RejectType_None;
 
@@ -630,26 +643,31 @@ void ServerHandler::sendPingInternal() {
 		return;
 	}
 
+	const auto now = UdpPathMonitor::Clock::now();
+	quint64 t      = static_cast< quint64 >(tTimestamp.elapsed().count());
+
+	// Force TCP mode sends no UDP at all: a UDP ping would let the server find a working UDP path for this client and
+	// route voice over it again.
+	if (m_udpPath && !NetworkConfig::TcpModeEnabled()) {
+		updateUdpPath(now);
+
+		if (qusUdp && csCrypt->isValid()) {
+			std::span< const Mumble::Protocol::byte > encodedPacket = encodeUdpPing(t);
+
+			sendMessage(encodedPacket.data(), static_cast< int >(encodedPacket.size()), true);
+			m_udpPath->probeSent(now);
+		}
+	}
+
+	// Half a tick of slack, as the ticker may fire slightly early.
+	if (now + UDP_PROBE_INTERVAL / 2 < m_nextTcpPing) {
+		return;
+	}
+	m_nextTcpPing = now + std::chrono::milliseconds(Global::get().s.iPingIntervalMsec);
+
 	if (Global::get().s.iMaxInFlightTCPPings > 0 && iInFlightTCPPings >= Global::get().s.iMaxInFlightTCPPings) {
 		serverConnectionClosed(QAbstractSocket::UnknownSocketError, tr("Server is not responding to TCP pings"));
 		return;
-	}
-
-	quint64 t = static_cast< quint64 >(tTimestamp.elapsed().count());
-
-	// Skip the UDP ping while TCP mode is forced (or UDP has already been given up on for this
-	// connection). Sending it anyway would let the server discover a working UDP path for this
-	// client and start routing voice packets over UDP again, defeating "Force TCP Mode".
-	const bool forcedTcp = NetworkConfig::TcpModeEnabled() || !bUdp;
-	if (qusUdp && !forcedTcp) {
-		Mumble::Protocol::PingData pingData;
-		pingData.timestamp                    = t;
-		pingData.requestAdditionalInformation = false;
-
-		m_udpPingEncoder.setProtocolVersion(m_version);
-		std::span< const Mumble::Protocol::byte > encodedPacket = m_udpPingEncoder.encodePingPacket(pingData);
-
-		sendMessage(encodedPacket.data(), static_cast< int >(encodedPacket.size()), true);
 	}
 
 	MumbleProto::Ping mpp;
@@ -676,6 +694,49 @@ void ServerHandler::sendPingInternal() {
 	sendMessage(mpp);
 
 	iInFlightTCPPings += 1;
+}
+
+void ServerHandler::updateUdpPath(UdpPathMonitor::TimePoint now) {
+	if (m_udpPath->update(now)) {
+		const bool udp = m_udpPath->path() == UdpPathMonitor::Path::Udp;
+		bUdp           = udp;
+		database->setUdp(qbaDigest, udp);
+		if (!udp) {
+			// Stop spending bits on FEC now rather than at the next ping reply
+			Global::get().iUplinkPacketLossPercent = 0;
+			m_tcpPathAnnounced                     = false;
+		}
+		Global::get().mw->msgBox(
+			udp ? tr("UDP packets can be sent to and received from the server. Switching back to UDP mode.")
+				: tr("UDP packets cannot be sent to or received from the server. Switching to TCP mode."));
+	}
+
+	if (!bUdp && !m_tcpPathAnnounced && m_version != Version::UNKNOWN) {
+		sendTunnelledPing();
+		m_tcpPathAnnounced = true;
+	}
+}
+
+std::span< const Mumble::Protocol::byte > ServerHandler::encodeUdpPing(quint64 timestamp) {
+	Mumble::Protocol::PingData pingData;
+	pingData.timestamp                    = timestamp;
+	pingData.requestAdditionalInformation = false;
+
+	m_udpPingEncoder.setProtocolVersion(m_version);
+	return m_udpPingEncoder.encodePingPacket(pingData);
+}
+
+void ServerHandler::sendTunnelledPing() {
+	ConnectionPtr connection(cConnection);
+	if (!connection) {
+		return;
+	}
+
+	std::span< const Mumble::Protocol::byte > encodedPacket =
+		encodeUdpPing(static_cast< quint64 >(tTimestamp.elapsed().count()));
+
+	connection->sendMessage(tunnelFrame(encodedPacket.data(), static_cast< int >(encodedPacket.size())));
+	connection->forceFlush();
 }
 
 void ServerHandler::message(Mumble::Protocol::TCPMessageType type, const QByteArray &qbaMsg) {
@@ -713,32 +774,6 @@ void ServerHandler::message(Mumble::Protocol::TCPMessageType type, const QByteAr
 				(bUdp && !NetworkConfig::TcpModeEnabled()) ? m_uplinkLoss.lossPercent() : 0;
 			accTCP(static_cast< double >(static_cast< std::uint64_t >(tTimestamp.elapsed().count()) - msg.timestamp())
 				   / 1000.0);
-
-			if (((csCrypt->m_statsRemote.good == 0) || (csCrypt->m_statsLocal.good == 0)) && bUdp
-				&& (tTimestamp.elapsed() > std::chrono::seconds(20))) {
-				bUdp = false;
-				if (!NetworkConfig::TcpModeEnabled()) {
-					if ((csCrypt->m_statsRemote.good == 0) && (csCrypt->m_statsLocal.good == 0))
-						Global::get().mw->msgBox(
-							tr("UDP packets cannot be sent to or received from the server. Switching to TCP mode."));
-					else if (csCrypt->m_statsRemote.good == 0)
-						Global::get().mw->msgBox(
-							tr("UDP packets cannot be sent to the server. Switching to TCP mode."));
-					else
-						Global::get().mw->msgBox(
-							tr("UDP packets cannot be received from the server. Switching to TCP mode."));
-
-					database->setUdp(qbaDigest, false);
-				}
-			} else if (!bUdp && (csCrypt->m_statsRemote.good > 3) && (csCrypt->m_statsLocal.good > 3)) {
-				bUdp = true;
-				if (!NetworkConfig::TcpModeEnabled()) {
-					Global::get().mw->msgBox(
-						tr("UDP packets can be sent to and received from the server. Switching back to UDP mode."));
-
-					database->setUdp(qbaDigest, true);
-				}
-			}
 		}
 	} else {
 		ServerHandlerMessageEvent *shme = new ServerHandlerMessageEvent(qbaMsg, type, false);
@@ -841,6 +876,9 @@ void ServerHandler::serverConnectionConnected() {
 		const QSslCertificate &qsc = qscCert.first();
 		qbaDigest                  = sha1(qsc.publicKey().toDer());
 		bUdp                       = database->getUdp(qbaDigest);
+		m_udpPath.emplace(bUdp ? UdpPathMonitor::Path::Udp : UdpPathMonitor::Path::Tcp, UdpPathMonitor::Clock::now());
+		m_tcpPathAnnounced = false;
+		m_nextTcpPing      = UdpPathMonitor::Clock::now();
 	} else {
 		// Shouldn't reach this
 		qCritical("Server must have a certificate. Dropping connection");

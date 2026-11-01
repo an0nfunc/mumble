@@ -34,6 +34,7 @@ if(client)
 	add_subdirectory("TestJitterBufferLatePackets")
 	add_subdirectory("TestPacketLossEstimator")
 	add_subdirectory("TestFecLookahead")
+	add_subdirectory("TestUdpPathMonitor")
 endif()
 
 if(server)

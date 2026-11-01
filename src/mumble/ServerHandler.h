@@ -37,8 +37,11 @@
 #include "PacketLossEstimator.h"
 #include "ServerAddress.h"
 #include "Timer.h"
+#include "UdpPathMonitor.h"
 
+#include <atomic>
 #include <memory>
+#include <optional>
 
 class Connection;
 class CryptState;
@@ -88,13 +91,22 @@ private:
 
 	ServerHandlerState m_state = ServerHandlerState::Idle;
 
+	std::optional< UdpPathMonitor > m_udpPath;
+	bool m_tcpPathAnnounced = false;
+	UdpPathMonitor::TimePoint m_nextTcpPing;
+
+	void updateUdpPath(UdpPathMonitor::TimePoint now);
+	std::span< const Mumble::Protocol::byte > encodeUdpPing(quint64 timestamp);
+	/// Any tunnelled packet makes the server send voice to us over TCP. This makes it switch before we next speak.
+	void sendTunnelledPing();
+
 protected:
 	QString qsHostName;
 	QString qsUserName;
 	QString qsPassword;
 	unsigned short usPort;
 	unsigned short usResolvedPort;
-	bool bUdp;
+	std::atomic< bool > bUdp;
 	bool bStrong;
 	int connectionID;
 	Mumble::Protocol::UDPPingEncoder< Mumble::Protocol::Role::Client > m_udpPingEncoder;

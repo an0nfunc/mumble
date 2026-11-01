@@ -262,6 +262,8 @@ set(MUMBLE_SOURCES
 	"Tokens.ui"
 	"Translations.cpp"
 	"Translations.h"
+	"UdpPathMonitor.cpp"
+	"UdpPathMonitor.h"
 	"Usage.cpp"
 	"Usage.h"
 	"UserEdit.cpp"
