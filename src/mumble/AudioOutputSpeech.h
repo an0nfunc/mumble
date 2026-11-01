@@ -15,6 +15,7 @@
 #include "AudioOutputCache.h"
 #include "FecLookahead.h"
 #include "MumbleProtocol.h"
+#include "PlayoutCatchUp.h"
 
 #include <cstdint>
 #include <mutex>
@@ -61,6 +62,8 @@ protected:
 	std::optional< std::uint32_t > m_receivedEnd;
 	int m_baseJitterMargin = 0;
 	bool m_fecMarginRaised = false;
+	PlayoutCatchUp m_catchUp;
+	std::vector< float > m_stretchBuffer;
 
 	OpusDecoder *opusState;
 

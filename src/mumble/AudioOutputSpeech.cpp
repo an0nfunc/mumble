@@ -9,6 +9,7 @@
 #include "ClientUser.h"
 #include "JitterTimestamp.h"
 #include "PacketDataStream.h"
+#include "TimeStretch.h"
 #include "Utils.h"
 #include "Global.h"
 
@@ -115,6 +116,7 @@ AudioOutputSpeech::AudioOutputSpeech(ClientUser *user, unsigned int freq, Mumble
 		iBufferSize *= 2;
 		iFrameSize *= 2;
 	}
+	m_stretchBuffer.resize(iAudioBufferSize);
 
 	pfBuffer = new float[iBufferSize];
 
@@ -267,10 +269,13 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 
 	float *pOut;
 	bool nextalive = bLastAlive;
+	m_catchUp.startRequest();
 
 	while (iBufferFilled < sampleCount + INTERAURAL_DELAY) {
 		int decodedSamples = static_cast< int >(iFrameSize);
 		int fecFrameSize   = 0;
+		bool skipQuiet     = false;
+		auto rate          = PlayoutCatchUp::Rate::Normal;
 		resizeBuffer(iBufferFilled + iOutputSize + INTERAURAL_DELAY);
 		// TODO: allocating memory in the audio callback will crash mumble in some cases.
 		//       we need to initialize the buffer with an appropriate size when initializing
@@ -343,6 +348,13 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 					m_suggestedVolumeAdjustment = cache.getVolumeAdjustment();
 					m_audioContext              = cache.getContext();
 
+					if (m_receivedEnd) {
+						const std::int32_t backlog = JitterTimestamp::diff(
+							*m_receivedEnd,
+							static_cast< std::uint32_t >(jitter_buffer_get_pointer_timestamp(jbJitter)));
+						m_catchUp.update(backlog / static_cast< std::int32_t >(iFrameSize));
+					}
+
 					if (p) {
 						float a = static_cast< float >(avail);
 						if (static_cast< float >(avail) >= p->fAverageAvailable)
@@ -413,6 +425,8 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 				if (decodedSamples < 0) {
 					decodedSamples = static_cast< int >(iFrameSize);
 					memset(pOut, 0, iFrameSize * sizeof(float));
+				} else if (fecFrameSize == 0 && !(p && p->bLocalMute)) {
+					rate = m_catchUp.rate();
 				}
 
 				bool update = true;
@@ -438,6 +452,9 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 					}
 
 					update = (pow < (fPowerMin + 0.01f * (fPowerMax - fPowerMin))); // Update jitter buffer when quiet.
+					// The jitter buffer only reduces its delay in quiet frames, so a stream left far behind by a delay
+					// spike stays behind for long. Dropping quiet packets meanwhile catches up sooner.
+					skipQuiet = update && m_catchUp.skipQuiet();
 				}
 
 				if (qlFrames.isEmpty() && update) {
@@ -477,6 +494,18 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 				for (unsigned int i = static_cast< unsigned int >(decodedSamples) / iFrameSize; i > 0; --i) {
 					jitter_buffer_tick(jbJitter);
 				}
+			}
+
+			if (skipQuiet) {
+				decodedSamples = 0;
+			} else if (rate != PlayoutCatchUp::Rate::Normal) {
+				// The jitter buffer has been ticked for the packet's own length; only the played length changes.
+				const std::size_t frames  = static_cast< std::size_t >(decodedSamples) / channels;
+				const std::size_t target  = rate == PlayoutCatchUp::Rate::Faster ? frames * 2 / 3 : frames * 3 / 2;
+				const std::size_t written = TimeStretch::process(pOut, frames, channels, target, m_stretchBuffer.data(),
+																 iAudioBufferSize / channels);
+				std::copy_n(m_stretchBuffer.data(), written * channels, pOut);
+				decodedSamples = static_cast< int >(written * channels);
 			}
 		}
 	nextframe:
