@@ -1,0 +1,174 @@
+# Builds the client and server from the tree this file is checked out in.
+# Adapted from the Arch Linux mumble package.
+
+pkgbase=mumble-poorlink
+pkgname=(mumble-poorlink mumble-poorlink-server)
+pkgver=1.7.0
+pkgrel=1
+pkgdesc="An Open Source, low-latency, high quality voice chat software"
+arch=(x86_64)
+url="https://github.com/an0nfunc/mumble"
+license=(BSD-3-Clause)
+depends=(
+  abseil-cpp
+  fmt
+  glibc
+  libgcc
+  libstdc++
+  openssl libcrypto.so libssl.so
+  protobuf libprotobuf.so
+  qt6-base
+  spdlog
+)
+makedepends=(
+  avahi
+  boost
+  cli11
+  cmake
+  git
+  ninja
+  nlohmann-json
+  python
+  qt6-tools
+  utf8cpp
+)
+# client
+makedepends+=(
+  alsa-lib
+  hicolor-icon-theme
+  jack
+  libpulse
+  libsndfile
+  libspeechd
+  libx11
+  libxi
+  mesa
+  opus
+  poco
+  qt6-svg
+  rnnoise
+  speech-dispatcher
+  speexdsp
+  xdg-utils
+)
+# server
+makedepends+=(
+  libcap
+  mariadb-libs
+  postgresql-libs
+  sqlite
+  systemd
+  zeroc-ice
+)
+checkdepends=(
+  xorg-server-xvfb
+)
+options=(!debug)
+
+_root=$(realpath "$startdir/../..")
+
+pkgver() {
+  cd "$_root"
+  local series
+  series=$(python scripts/mumble-version.py)
+  printf '%s.0.r%s.g%s' "$series" "$(git rev-list --count HEAD)" "$(git rev-parse --short=9 HEAD)"
+}
+
+build() {
+  local default_options=(
+    -G Ninja
+    -D CMAKE_INSTALL_PREFIX=/usr
+    -D CMAKE_BUILD_TYPE=None
+    -D CMAKE_PROJECT_TOP_LEVEL_INCLUDES=cmake/mumble_dependency_provider.cmake
+    -D CMAKE_UNITY_BUILD=ON
+    -D tests=ON
+    -D warnings-as-errors=OFF
+    -S "$_root"
+    -W no-dev
+  )
+  local cmake_options_client=(
+    -D update=OFF
+    -D server=OFF
+    -D overlay-xcompile=OFF
+    -D bundled-rnnoise=OFF
+    -D bundled-speex=OFF
+    -B build-client
+  )
+  local cmake_options_server=(
+    -D CMAKE_INSTALL_SYSCONFDIR=/etc
+    -D use-pkgconf-install-paths=ON
+    # Fetched SOCI is not installed, so it has to be linked in
+    -D SOCI_SHARED=OFF
+    -D client=OFF
+    -B build-server
+  )
+
+  cmake "${default_options[@]}" "${cmake_options_server[@]}"
+  cmake --build build-server
+
+  cmake "${default_options[@]}" "${cmake_options_client[@]}"
+  cmake --build build-client
+}
+
+check() {
+  xvfb-run ctest --test-dir build-client --output-on-failure
+  ctest --test-dir build-server --output-on-failure
+}
+
+package_mumble-poorlink() {
+  pkgdesc+=" (client)"
+  depends+=(
+    alsa-lib libasound.so
+    avahi libdns_sd.so
+    hicolor-icon-theme
+    jack
+    libpulse
+    libsndfile libsndfile.so
+    libspeechd
+    libx11
+    libxi
+    opus libopus.so
+    poco libPocoFoundation.so libPocoXML.so libPocoZip.so
+    qt6-svg
+    rnnoise
+    speexdsp libspeexdsp.so
+    xdg-utils
+  )
+  optdepends=(
+    'bash: for mumble-overlay'
+    'speech-dispatcher: Text-to-speech support'
+  )
+  provides=(mumble)
+  conflicts=(mumble)
+
+  DESTDIR="$pkgdir" cmake --install build-client
+  install -vDm 644 "$_root/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
+}
+
+package_mumble-poorlink-server() {
+  pkgdesc+=" (server)"
+  depends+=(
+    avahi libdns_sd.so
+    bash
+    libcap libcap.so
+    mariadb-libs
+    postgresql-libs
+    sqlite
+    zeroc-ice
+  )
+  provides=(mumble-server)
+  conflicts=(mumble-server)
+  backup=(etc/mumble/mumble-server.ini)
+
+  DESTDIR="$pkgdir" cmake --install build-server
+  sed -i \
+    -e 's|^database=$|database=/var/lib/mumble-server/mumble-server.sqlite|' \
+    -e 's|^;logfile=mumble-server.log$|logfile=|' \
+    "$pkgdir/etc/mumble/mumble-server.ini"
+  grep -qx 'database=/var/lib/mumble-server/mumble-server.sqlite' "$pkgdir/etc/mumble/mumble-server.ini"
+  grep -qx 'logfile=' "$pkgdir/etc/mumble/mumble-server.ini"
+  printf 'u! _mumble-server - "Mumble server user" - -\n' > "$pkgdir/usr/lib/sysusers.d/mumble-server.conf"
+  printf 'd /var/lib/mumble-server 0750 _mumble-server _mumble-server -\n' >> "$pkgdir/usr/lib/tmpfiles.d/mumble-server.conf"
+  install -vDm 644 "$_root/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
+}
+# vim: sw=2:ts=2 et:
