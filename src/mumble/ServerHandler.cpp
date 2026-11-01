@@ -320,9 +320,10 @@ void ServerHandler::handleVoicePacket(const Mumble::Protocol::AudioData &audioDa
 
 void ServerHandler::sendMessage(const unsigned char *data, int len, bool force) {
 	static std::vector< unsigned char > crypto;
-	crypto.resize(static_cast< std::size_t >(len + 4));
 
+	// The audio input thread and the ServerHandler thread both send, so the shared buffer is only touched under qmUdp
 	QMutexLocker qml(&qmUdp);
+	crypto.resize(static_cast< std::size_t >(len + 4));
 
 	if (!qusUdp)
 		return;
