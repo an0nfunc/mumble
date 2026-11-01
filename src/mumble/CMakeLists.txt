@@ -149,6 +149,8 @@ set(MUMBLE_SOURCES
 	"EchoCancelOption.h"
 	"EnumStringConversions.cpp"
 	"EnumStringConversions.h"
+	"FecLookahead.cpp"
+	"FecLookahead.h"
 	"Global.cpp"
 	"Global.h"
 	"GlobalShortcut.cpp"
@@ -188,6 +190,8 @@ set(MUMBLE_SOURCES
 	"NetworkConfig.cpp"
 	"NetworkConfig.h"
 	"NetworkConfig.ui"
+	"PacketLossEstimator.cpp"
+	"PacketLossEstimator.h"
 	"PluginConfig.cpp"
 	"PluginConfig.h"
 	"PluginConfig.ui"
@@ -720,7 +724,14 @@ else()
 endif()
 
 find_package("Opus" REQUIRED)
-target_link_libraries(mumble_client_lib PUBLIC Opus::opus)
+target_link_libraries(mumble_client_audio_libs INTERFACE Opus::opus)
+include(CheckSymbolExists)
+set(CMAKE_REQUIRED_LIBRARIES Opus::opus)
+check_symbol_exists(opus_packet_has_lbrr "opus.h" MUMBLE_HAVE_OPUS_PACKET_HAS_LBRR)
+unset(CMAKE_REQUIRED_LIBRARIES)
+if(MUMBLE_HAVE_OPUS_PACKET_HAS_LBRR)
+	target_compile_definitions(mumble_client_audio_libs INTERFACE MUMBLE_HAVE_OPUS_PACKET_HAS_LBRR)
+endif()
 
 if(bundled-speex)
 	add_subdirectory("${3RDPARTY_DIR}/speexdsp-build" "${CMAKE_CURRENT_BINARY_DIR}/speexdsp" EXCLUDE_FROM_ALL)

@@ -246,6 +246,8 @@ AudioInput::AudioInput()
 	}
 
 	opus_encoder_ctl(opusState, OPUS_SET_VBR(0)); // CBR
+	// Only adds data once a packet loss is set
+	opus_encoder_ctl(opusState, OPUS_SET_INBAND_FEC(1));
 
 #ifdef USE_RNNOISE
 	denoiseState = rnnoise_create(nullptr);
@@ -854,6 +856,11 @@ int AudioInput::encodeOpusFrame(short *source, int size, EncodingOutputBuffer &b
 	}
 
 	opus_encoder_ctl(opusState, OPUS_SET_BITRATE(iAudioQuality));
+	const int packetLossPercent = Global::get().iUplinkPacketLossPercent.load();
+	if (packetLossPercent != m_appliedPacketLossPercent) {
+		opus_encoder_ctl(opusState, OPUS_SET_PACKET_LOSS_PERC(packetLossPercent));
+		m_appliedPacketLossPercent = packetLossPercent;
+	}
 
 	len = opus_encode(opusState, source, size, &buffer[0], static_cast< opus_int32 >(buffer.size()));
 	const int tenMsFrameCount = (size / iFrameSize);

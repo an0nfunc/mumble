@@ -502,6 +502,9 @@ void ServerHandler::run() {
 
 		accUDP = accTCP = accClean;
 
+		m_uplinkLoss                           = PacketLossEstimator();
+		Global::get().iUplinkPacketLossPercent = 0;
+
 		m_version   = Version::UNKNOWN;
 		qsRelease   = QString();
 		qsOS        = QString();
@@ -699,6 +702,10 @@ void ServerHandler::message(Mumble::Protocol::TCPMessageType type, const QByteAr
 			csCrypt->m_statsRemote.late   = msg.late();
 			csCrypt->m_statsRemote.lost   = msg.lost();
 			csCrypt->m_statsRemote.resync = msg.resync();
+			m_uplinkLoss.update(msg.good(), msg.lost());
+			// Over TCP nothing is lost, so FEC would only cost bits
+			Global::get().iUplinkPacketLossPercent =
+				(bUdp && !NetworkConfig::TcpModeEnabled()) ? m_uplinkLoss.lossPercent() : 0;
 			accTCP(static_cast< double >(static_cast< std::uint64_t >(tTimestamp.elapsed().count()) - msg.timestamp())
 				   / 1000.0);
 

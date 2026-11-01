@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <utility>
 
 std::mutex AudioOutputSpeech::s_audioCachesMutex;
 std::vector< AudioOutputCache > AudioOutputSpeech::s_audioCaches(100);
@@ -132,9 +133,9 @@ AudioOutputSpeech::AudioOutputSpeech(ClientUser *user, unsigned int freq, Mumble
 
 	m_audioContext = Mumble::Protocol::AudioContext::INVALID;
 
-	jbJitter   = jitter_buffer_init(static_cast< int >(iFrameSize));
-	int margin = Global::get().s.iJitterBufferSize * static_cast< int >(iFrameSize);
-	jitter_buffer_ctl(jbJitter, JITTER_BUFFER_SET_MARGIN, &margin);
+	jbJitter           = jitter_buffer_init(static_cast< int >(iFrameSize));
+	m_baseJitterMargin = Global::get().s.iJitterBufferSize * static_cast< int >(iFrameSize);
+	jitter_buffer_ctl(jbJitter, JITTER_BUFFER_SET_MARGIN, &m_baseJitterMargin);
 
 	// We are configuring our Jitter buffer to use a custom deleter function. This prevents the buffer from
 	// copying the stored data into the buffer itself and also from releasing the memory of it. Instead it
@@ -222,7 +223,26 @@ void AudioOutputSpeech::addFrameToBuffer(const Mumble::Protocol::AudioData &audi
 								   jbp.timestamp, jbp.span, iFrameSize)) {
 		// jitter_buffer_put() dropped it without calling our destroy callback
 		invalidateAudioOutputCache(jbp.data);
+		return;
 	}
+
+	const std::uint32_t timestamp = jbp.timestamp;
+	const std::uint32_t span      = jbp.span;
+	QByteArray payload(reinterpret_cast< const char * >(audioData.payload.data()),
+					   static_cast< qsizetype >(audioData.payload.size()));
+
+	if (!m_fecMarginRaised && m_receivedEnd && JitterTimestamp::diff(timestamp, *m_receivedEnd) > 0
+		&& FecLookahead::mayCarryFec(payload)) {
+		// A packet before this one is missing. Buffer one more packet so that, when such a gap is played, the
+		// packet carrying its FEC data has already arrived.
+		int margin = m_baseJitterMargin + static_cast< int >(span);
+		jitter_buffer_ctl(jbJitter, JITTER_BUFFER_SET_MARGIN, &margin);
+		m_fecMarginRaised = true;
+	}
+	if (!m_receivedEnd || JitterTimestamp::diff(timestamp + span, *m_receivedEnd) > 0) {
+		m_receivedEnd = timestamp + span;
+	}
+	m_fecLookahead.insert(timestamp, span, std::move(payload));
 }
 
 bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
@@ -250,6 +270,7 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 
 	while (iBufferFilled < sampleCount + INTERAURAL_DELAY) {
 		int decodedSamples = static_cast< int >(iFrameSize);
+		int fecFrameSize   = 0;
 		resizeBuffer(iBufferFilled + iOutputSize + INTERAURAL_DELAY);
 		// TODO: allocating memory in the audio callback will crash mumble in some cases.
 		//       we need to initialize the buffer with an appropriate size when initializing
@@ -285,7 +306,9 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 				JitterBufferPacket jbp;
 
 				spx_int32_t startofs = 0;
-				if (jitter_buffer_get(jbJitter, &jbp, static_cast< int >(iFrameSize), &startofs) == JITTER_BUFFER_OK) {
+				const auto gapStart  = static_cast< std::uint32_t >(jitter_buffer_get_pointer_timestamp(jbJitter));
+				const int result     = jitter_buffer_get(jbJitter, &jbp, static_cast< int >(iFrameSize), &startofs);
+				if (result == JITTER_BUFFER_OK) {
 					std::lock_guard< std::mutex > audioChunkLock(s_audioCachesMutex);
 
 					iMissCount = 0;
@@ -333,14 +356,27 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 					// We registered a destroy callback in our constructor, so we clean up the packet here.
 					cache.clear();
 				} else {
-					// Let the jitter buffer know it's the right time to adjust the buffering delay to the network
-					// conditions.
-					jitter_buffer_update_delay(jbJitter, &jbp, nullptr);
+					const std::optional< FecLookahead::Recovery > recovery =
+						result == JITTER_BUFFER_MISSING
+							? m_fecLookahead.skipToNext(jbJitter, gapStart, iFrameSize, iAudioBufferSize,
+														&AudioOutputSpeech::invalidateAudioOutputCache)
+							: std::nullopt;
+					if (recovery) {
+						// No delay update here: it may move the pointer off the packet that carries the FEC data
+						qlFrames << recovery->payload;
+						fecFrameSize = static_cast< int >(recovery->gap / channels);
+						iMissCount   = 0;
+					} else {
+						// Let the jitter buffer know it's the right time to adjust the buffering delay to the network
+						// conditions.
+						jitter_buffer_update_delay(jbJitter, &jbp, nullptr);
 
-					iMissCount++;
-					if (iMissCount > 10)
-						nextalive = false;
+						iMissCount++;
+						if (iMissCount > 10)
+							nextalive = false;
+					}
 				}
+				m_fecLookahead.prune(static_cast< std::uint32_t >(jitter_buffer_get_pointer_timestamp(jbJitter)));
 			}
 
 			if (!qlFrames.isEmpty()) {
@@ -348,7 +384,13 @@ bool AudioOutputSpeech::prepareSampleBuffer(unsigned int frameCount) {
 
 				assert(m_codec == Mumble::Protocol::AudioCodec::Opus);
 
-				if (qba.isEmpty() || !(p && p->bLocalMute)) {
+				if (fecFrameSize > 0) {
+					decodedSamples =
+						(p && p->bLocalMute)
+							? fecFrameSize
+							: opus_decode_float(opusState, reinterpret_cast< const unsigned char * >(qba.constData()),
+												static_cast< opus_int32 >(qba.size()), pOut, fecFrameSize, 1);
+				} else if (qba.isEmpty() || !(p && p->bLocalMute)) {
 					// If qba is empty, we have to let Opus know about the packet loss
 					// Otherwise if the associated user is not locally muted, we want to decode the audio
 					// packet normally in order to be able to play it.

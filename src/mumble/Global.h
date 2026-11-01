@@ -14,6 +14,7 @@
 #include "Timer.h"
 #include "Version.h"
 
+#include <atomic>
 #include <memory>
 
 // Global helper class to spread variables around across threads.
@@ -94,6 +95,8 @@ public:
 	ChanACL::Permissions pPermissions;
 	int iMaxBandwidth;
 	int iAudioBandwidth;
+	/// Uplink packet loss in percent the Opus encoder should expect. Written by ServerHandler, read by AudioInput.
+	std::atomic< int > iUplinkPacketLossPercent{ 0 };
 	QDir qdBasePath;
 	bool bAttenuateOthers;
 	/// If set the AudioOutput::mix will forcefully adjust the volume of all

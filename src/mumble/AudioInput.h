@@ -188,6 +188,8 @@ private:
 	void resetAudioProcessor();
 
 	OpusEncoder *opusState;
+	/// Packet loss percentage last passed to the encoder, -1 before the first
+	int m_appliedPacketLossPercent = -1;
 #ifdef USE_RNNOISE
 	DenoiseState *denoiseState;
 #endif

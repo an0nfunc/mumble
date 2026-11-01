@@ -32,6 +32,8 @@ if(client)
 	endif()
 	add_subdirectory("OverlayTest")
 	add_subdirectory("TestJitterBufferLatePackets")
+	add_subdirectory("TestPacketLossEstimator")
+	add_subdirectory("TestFecLookahead")
 endif()
 
 if(server)

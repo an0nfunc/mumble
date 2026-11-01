@@ -34,6 +34,7 @@
 #include "HostAddress.h"
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
+#include "PacketLossEstimator.h"
 #include "ServerAddress.h"
 #include "Timer.h"
 
@@ -101,6 +102,8 @@ protected:
 	/// Flag indicating whether the server we are currently connected to has
 	/// finished synchronizing already.
 	bool serverSynchronized = false;
+
+	PacketLossEstimator m_uplinkLoss;
 
 #ifdef Q_OS_WIN
 	HANDLE hQoS;

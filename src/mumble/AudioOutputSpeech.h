@@ -13,9 +13,12 @@
 
 #include "AudioOutputBuffer.h"
 #include "AudioOutputCache.h"
+#include "FecLookahead.h"
 #include "MumbleProtocol.h"
 
+#include <cstdint>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 class ClientUser;
@@ -53,6 +56,11 @@ protected:
 	QMutex qmJitter;
 	JitterBuffer *jbJitter;
 	int iMissCount;
+	FecLookahead m_fecLookahead;
+	/// End timestamp of the newest packet received, to notice gaps on arrival.
+	std::optional< std::uint32_t > m_receivedEnd;
+	int m_baseJitterMargin = 0;
+	bool m_fecMarginRaised = false;
 
 	OpusDecoder *opusState;
 
